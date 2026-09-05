@@ -36,29 +36,39 @@ function AuthPage() {
   const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function ensureProfile(authUserId: string, fallbackEmail: string) {
-    const { data: existing } = await supabase
-      .from("profiles")
-      .select("id, display_name")
-      .eq("auth_user_id", authUserId)
-      .maybeSingle();
-    if (existing) {
-      const wanted = displayName.trim();
-      if (wanted && existing.display_name !== wanted) {
-        await supabase.from("profiles").update({ display_name: wanted }).eq("id", existing.id);
-      }
-      return;
-    }
+  function ensureProfile(authUserId: string, fallbackEmail: string) {
+    const pending = profileSetup.get(authUserId);
+    if (pending) return pending;
 
-    const handle = (fallbackEmail.split("@")[0] || "member").replace(/[^a-z0-9_]/gi, "").toLowerCase();
-    await supabase.from("profiles").upsert(
-      {
-        auth_user_id: authUserId,
-        username: `${handle}${Math.floor(Math.random() * 9000 + 1000)}`,
-        display_name: displayName.trim() || handle,
-      },
-      { onConflict: "auth_user_id", ignoreDuplicates: true },
-    );
+    const run = (async () => {
+      const { data: existing } = await supabase
+        .from("profiles")
+        .select("id, display_name")
+        .eq("auth_user_id", authUserId)
+        .maybeSingle();
+      const wanted = displayName.trim();
+      if (existing) {
+        if (wanted && existing.display_name !== wanted) {
+          await supabase.from("profiles").update({ display_name: wanted }).eq("id", existing.id);
+        }
+        return;
+      }
+
+      const handle = (fallbackEmail.split("@")[0] || "member")
+        .replace(/[^a-z0-9_]/gi, "")
+        .toLowerCase();
+      await supabase.from("profiles").upsert(
+        {
+          auth_user_id: authUserId,
+          username: `${handle}${Math.floor(Math.random() * 9000 + 1000)}`,
+          display_name: wanted || handle,
+        },
+        { onConflict: "auth_user_id", ignoreDuplicates: true },
+      );
+    })();
+
+    profileSetup.set(authUserId, run);
+    return run;
   }
 
   useEffect(() => {
