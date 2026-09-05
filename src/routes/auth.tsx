@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Loader2, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { lovable } from "@/integrations/lovable/index";
@@ -35,6 +35,9 @@ function AuthPage() {
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
+  // Kept in a ref so the auth-session watcher always reads the latest value.
+  const displayNameRef = useRef("");
+  displayNameRef.current = displayName;
 
   function ensureProfile(authUserId: string, fallbackEmail: string) {
     const pending = profileSetup.get(authUserId);
@@ -46,7 +49,7 @@ function AuthPage() {
         .select("id, display_name")
         .eq("auth_user_id", authUserId)
         .maybeSingle();
-      const wanted = displayName.trim();
+      const wanted = displayNameRef.current.trim();
       if (existing) {
         if (wanted && existing.display_name !== wanted) {
           await supabase.from("profiles").update({ display_name: wanted }).eq("id", existing.id);
