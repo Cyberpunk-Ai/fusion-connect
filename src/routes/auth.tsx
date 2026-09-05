@@ -7,6 +7,9 @@ import { lovable } from "@/integrations/lovable/index";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 
+// Shared across mounts so a profile is only ever provisioned once per user.
+const profileSetup = new Map<string, Promise<void>>();
+
 export const Route = createFileRoute("/auth")({
   head: () => ({
     meta: [
