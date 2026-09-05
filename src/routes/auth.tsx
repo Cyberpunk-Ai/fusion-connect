@@ -36,10 +36,16 @@ function AuthPage() {
   async function ensureProfile(authUserId: string, fallbackEmail: string) {
     const { data: existing } = await supabase
       .from("profiles")
-      .select("id")
+      .select("id, display_name")
       .eq("auth_user_id", authUserId)
       .maybeSingle();
-    if (existing) return;
+    if (existing) {
+      const wanted = displayName.trim();
+      if (wanted && existing.display_name !== wanted) {
+        await supabase.from("profiles").update({ display_name: wanted }).eq("id", existing.id);
+      }
+      return;
+    }
 
     const handle = (fallbackEmail.split("@")[0] || "member").replace(/[^a-z0-9_]/gi, "").toLowerCase();
     await supabase.from("profiles").insert({
@@ -111,12 +117,10 @@ function AuthPage() {
           return;
         }
 
-        await ensureProfile(data.session.user.id, email);
         toast.success("Account created — welcome to Spaces!");
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        if (data.user) await ensureProfile(data.user.id, email);
         toast.success("Signed in");
       }
       void navigate({ to: "/feed" });
