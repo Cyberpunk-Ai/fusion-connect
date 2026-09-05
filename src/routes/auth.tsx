@@ -48,11 +48,14 @@ function AuthPage() {
     }
 
     const handle = (fallbackEmail.split("@")[0] || "member").replace(/[^a-z0-9_]/gi, "").toLowerCase();
-    await supabase.from("profiles").insert({
-      auth_user_id: authUserId,
-      username: `${handle}${Math.floor(Math.random() * 9000 + 1000)}`,
-      display_name: displayName.trim() || handle,
-    });
+    await supabase.from("profiles").upsert(
+      {
+        auth_user_id: authUserId,
+        username: `${handle}${Math.floor(Math.random() * 9000 + 1000)}`,
+        display_name: displayName.trim() || handle,
+      },
+      { onConflict: "auth_user_id", ignoreDuplicates: true },
+    );
   }
 
   useEffect(() => {
