@@ -1075,7 +1075,12 @@ function Cta() {
 /* ---------------------------------- footer --------------------------------- */
 
 function Footer() {
-  const cols: Array<{ title: string; links: Array<{ label: string; to: string; hash?: string }> }> = [
+  type FooterLink = {
+    label: string;
+    to: "/" | "/spaces" | "/explore" | "/pricing" | "/about" | "/help" | "/privacy" | "/terms" | "/notifications";
+    hash?: string;
+  };
+  const cols: Array<{ title: string; links: FooterLink[] }> = [
     {
       title: "Product",
       links: [
@@ -1109,6 +1114,16 @@ function Footer() {
       ],
     },
   ];
+  return (
+    <footer className="border-t border-gray-200 bg-white/60 pb-10 pt-20">
+      <div className="container mx-auto px-6">
+        <div className="mb-20 grid gap-x-16 gap-y-12 md:grid-cols-6">
+          <div className="md:col-span-2">
+            <p className="mb-4 text-2xl font-extrabold tracking-tight">Spaces</p>
+            <p className="max-w-xs text-gray-500">
+              The next-generation social platform built for creators and communities.
+            </p>
+          </div>
           {cols.map((c) => (
             <div key={c.title}>
               <p className="mb-4 text-sm font-bold uppercase tracking-wider text-gray-900">
