@@ -1075,22 +1075,40 @@ function Cta() {
 /* ---------------------------------- footer --------------------------------- */
 
 function Footer() {
-  const cols = [
-    { title: "Product", links: ["Features", "Spaces", "Creators", "Pricing"] },
-    { title: "Company", links: ["About", "Careers", "Press", "Blog"] },
-    { title: "Resources", links: ["Help Center", "Community", "Guidelines", "Status"] },
-    { title: "Legal", links: ["Privacy", "Terms", "Cookies", "Licenses"] },
+  const cols: Array<{ title: string; links: Array<{ label: string; to: string; hash?: string }> }> = [
+    {
+      title: "Product",
+      links: [
+        { label: "Features", to: "/", hash: "features" },
+        { label: "Spaces", to: "/spaces" },
+        { label: "Creators", to: "/explore" },
+        { label: "Pricing", to: "/pricing" },
+      ],
+    },
+    {
+      title: "Company",
+      links: [
+        { label: "About", to: "/about" },
+        { label: "Explore", to: "/explore" },
+        { label: "Help Center", to: "/help" },
+      ],
+    },
+    {
+      title: "Resources",
+      links: [
+        { label: "Help Center", to: "/help" },
+        { label: "Community", to: "/spaces" },
+        { label: "Notifications", to: "/notifications" },
+      ],
+    },
+    {
+      title: "Legal",
+      links: [
+        { label: "Privacy", to: "/privacy" },
+        { label: "Terms", to: "/terms" },
+      ],
+    },
   ];
-  return (
-    <footer className="border-t border-gray-200 bg-white/60 pb-10 pt-20">
-      <div className="container mx-auto px-6">
-        <div className="mb-20 grid gap-x-16 gap-y-12 md:grid-cols-6">
-          <div className="md:col-span-2">
-            <p className="mb-4 text-2xl font-extrabold tracking-tight">Spaces</p>
-            <p className="max-w-xs text-gray-500">
-              The next-generation social platform built for creators and communities.
-            </p>
-          </div>
           {cols.map((c) => (
             <div key={c.title}>
               <p className="mb-4 text-sm font-bold uppercase tracking-wider text-gray-900">
@@ -1098,10 +1116,14 @@ function Footer() {
               </p>
               <ul className="space-y-3 text-sm text-gray-500">
                 {c.links.map((l) => (
-                  <li key={l}>
-                    <a href="#top" className="transition-colors hover:text-brand">
-                      {l}
-                    </a>
+                  <li key={`${c.title}-${l.label}`}>
+                    <Link
+                      to={l.to}
+                      hash={l.hash}
+                      className="transition-colors hover:text-brand"
+                    >
+                      {l.label}
+                    </Link>
                   </li>
                 ))}
               </ul>
