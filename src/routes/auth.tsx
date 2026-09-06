@@ -25,13 +25,18 @@ export const Route = createFileRoute("/auth")({
       { name: "twitter:card", content: "summary" },
     ],
   }),
+  validateSearch: (search: Record<string, unknown>): { email?: string; mode?: string } => ({
+    email: typeof search.email === "string" ? search.email : undefined,
+    mode: search.mode === "signup" ? "signup" : undefined,
+  }),
   component: AuthPage,
 });
 
 function AuthPage() {
   const navigate = useNavigate();
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [email, setEmail] = useState("");
+  const { email: prefillEmail, mode: prefillMode } = Route.useSearch();
+  const [mode, setMode] = useState<"signin" | "signup">(prefillMode === "signup" ? "signup" : "signin");
+  const [email, setEmail] = useState(prefillEmail ?? "");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
