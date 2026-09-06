@@ -1075,11 +1075,44 @@ function Cta() {
 /* ---------------------------------- footer --------------------------------- */
 
 function Footer() {
-  const cols = [
-    { title: "Product", links: ["Features", "Spaces", "Creators", "Pricing"] },
-    { title: "Company", links: ["About", "Careers", "Press", "Blog"] },
-    { title: "Resources", links: ["Help Center", "Community", "Guidelines", "Status"] },
-    { title: "Legal", links: ["Privacy", "Terms", "Cookies", "Licenses"] },
+  type FooterLink = {
+    label: string;
+    to: "/" | "/spaces" | "/explore" | "/pricing" | "/about" | "/help" | "/privacy" | "/terms" | "/notifications";
+    hash?: string;
+  };
+  const cols: Array<{ title: string; links: FooterLink[] }> = [
+    {
+      title: "Product",
+      links: [
+        { label: "Features", to: "/", hash: "features" },
+        { label: "Spaces", to: "/spaces" },
+        { label: "Creators", to: "/explore" },
+        { label: "Pricing", to: "/pricing" },
+      ],
+    },
+    {
+      title: "Company",
+      links: [
+        { label: "About", to: "/about" },
+        { label: "Explore", to: "/explore" },
+        { label: "Help Center", to: "/help" },
+      ],
+    },
+    {
+      title: "Resources",
+      links: [
+        { label: "Help Center", to: "/help" },
+        { label: "Community", to: "/spaces" },
+        { label: "Notifications", to: "/notifications" },
+      ],
+    },
+    {
+      title: "Legal",
+      links: [
+        { label: "Privacy", to: "/privacy" },
+        { label: "Terms", to: "/terms" },
+      ],
+    },
   ];
   return (
     <footer className="border-t border-gray-200 bg-white/60 pb-10 pt-20">
@@ -1098,10 +1131,14 @@ function Footer() {
               </p>
               <ul className="space-y-3 text-sm text-gray-500">
                 {c.links.map((l) => (
-                  <li key={l}>
-                    <a href="#top" className="transition-colors hover:text-brand">
-                      {l}
-                    </a>
+                  <li key={`${c.title}-${l.label}`}>
+                    <Link
+                      to={l.to}
+                      hash={l.hash}
+                      className="transition-colors hover:text-brand"
+                    >
+                      {l.label}
+                    </Link>
                   </li>
                 ))}
               </ul>
