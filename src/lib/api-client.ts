@@ -94,6 +94,7 @@ export async function getPosts(
   if (error) throw error;
   const posts = (data ?? []).map((row: any) => rowToPost(row));
   await hydrateAuthors(posts.map((p: Post) => p.user_id));
+  await hydrateEngagement(posts);
   return posts;
 }
 
@@ -109,6 +110,7 @@ export async function getBookmarkedPosts(limit = 50): Promise<Post[]> {
     .map((row) => (row.posts ? rowToPost(row.posts) : null))
     .filter(Boolean) as Post[];
   await hydrateAuthors(posts.map((p) => p.user_id));
+  await hydrateEngagement(posts, { bookmarked: true });
   return posts;
 }
 
@@ -117,6 +119,28 @@ async function hydrateAuthors(ids: string[]) {
   if (unique.length === 0) return;
   const { data } = await db.from("profiles").select("*").in("id", unique);
   if (data) cacheProfiles((data as any[]).map(rowToProfile));
+}
+
+/**
+ * Marks which posts the signed-in user has already liked, reposted or saved so
+ * those states survive a page reload instead of resetting to "off".
+ */
+async function hydrateEngagement(posts: Post[], defaults: { bookmarked?: boolean } = {}) {
+  if (posts.length === 0) return posts;
+  try {
+    const { liked, reposted, bookmarked } = await getMyEngagement(posts.map((p) => p.id));
+    const likedSet = new Set(liked);
+    const repostedSet = new Set(reposted);
+    const bookmarkedSet = new Set(bookmarked);
+    for (const post of posts) {
+      post.likedByMe = likedSet.has(post.id);
+      post.repostedByMe = repostedSet.has(post.id);
+      post.bookmarkedByMe = defaults.bookmarked || bookmarkedSet.has(post.id);
+    }
+  } catch {
+    /* engagement flags are best-effort */
+  }
+  return posts;
 }
 
 export async function createPost(input: {
