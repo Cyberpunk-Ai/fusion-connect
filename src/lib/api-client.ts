@@ -1347,7 +1347,15 @@ export async function globalSearch(
 /** Single Space by id. */
 export async function getSpace(id: string): Promise<{ space: Space | null }> {
   const { data } = await db.from("spaces").select("*").eq("id", id).maybeSingle();
-  return { space: (data as Space) ?? null };
+  if (!data) return { space: null };
+  const space = rowToSpace(data);
+  const [participants, messages] = await Promise.all([
+    getSpaceParticipants(id).catch(() => []),
+    getSpaceMessages(id).catch(() => []),
+  ]);
+  space.participants = participants;
+  space.messages = messages;
+  return { space };
 }
 
 export async function markNotificationRead(id: string) {
