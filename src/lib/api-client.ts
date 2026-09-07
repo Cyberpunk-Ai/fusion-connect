@@ -489,8 +489,71 @@ function rowToSpace(row: any): Space {
 
 export async function getSpaces(): Promise<{ spaces: Space[] }> {
   const { data } = await db.from("spaces").select("*").order("created_at", { ascending: false });
-  return { spaces: (data ?? []).map(rowToSpace) };
+  const spaces = (data ?? []).map(rowToSpace);
+  if (spaces.length > 0) {
+    const { data: parts } = await db
+      .from("space_participants")
+      .select("*")
+      .in("space_id", spaces.map((s: Space) => s.id));
+    const rows = (parts ?? []) as any[];
+    await hydrateAuthors(rows.map((r) => r.user_id));
+    for (const space of spaces) {
+      space.participants = rows
+        .filter((r) => r.space_id === space.id)
+        .map((r) => rowToParticipant(r));
+    }
+    await hydrateAuthors(spaces.map((s: Space) => s.host_id));
+  }
+  return { spaces };
 }
+
+function rowToParticipant(row: any): SpaceParticipant {
+  return {
+    id: row.user_id,
+    role: (row.role as SpaceParticipant["role"]) ?? "listener",
+    handRaised: Boolean(row.hand_raised),
+    isMuted: Boolean(row.is_muted),
+    isSpeaking: Boolean(row.is_speaking),
+  };
+}
+
+/** Recomputes the stored listener count from the live participant rows. */
+async function syncSpaceListeners(spaceId: string) {
+  const { count } = await db
+    .from("space_participants")
+    .select("user_id", { count: "exact", head: true })
+    .eq("space_id", spaceId);
+  const listeners = count ?? 0;
+  await db.from("spaces").update({ listeners }).eq("id", spaceId);
+  emitRealtime("space:listeners", { spaceId, listeners });
+  return listeners;
+}
+
+export async function getSpaceParticipants(spaceId: string): Promise<SpaceParticipant[]> {
+  const { data } = await db.from("space_participants").select("*").eq("space_id", spaceId);
+  const rows = (data ?? []) as any[];
+  await hydrateAuthors(rows.map((r) => r.user_id));
+  return rows.map(rowToParticipant);
+}
+
+export async function getSpaceMessages(spaceId: string): Promise<SpaceChatMessage[]> {
+  const { data } = await db
+    .from("space_messages")
+    .select("*")
+    .eq("space_id", spaceId)
+    .order("created_at", { ascending: true })
+    .limit(200);
+  const rows = (data ?? []) as any[];
+  await hydrateAuthors(rows.map((r) => r.user_id));
+  return rows.map((r) => ({
+    id: String(r.id),
+    userId: r.user_id,
+    name: "",
+    body: r.body ?? "",
+    createdAt: r.created_at ?? nowIso(),
+  }));
+}
+
 
 /** Start a new live audio room hosted by the signed-in profile. */
 export async function createSpace(input: { title: string; topic: string; gradient?: string }) {
