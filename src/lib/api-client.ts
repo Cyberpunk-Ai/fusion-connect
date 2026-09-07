@@ -19,6 +19,8 @@ import type {
   PostComment,
   Profile,
   Space,
+  SpaceParticipant,
+  SpaceChatMessage,
   Story,
   SystemSettings,
   Topic,
@@ -94,6 +96,7 @@ export async function getPosts(
   if (error) throw error;
   const posts = (data ?? []).map((row: any) => rowToPost(row));
   await hydrateAuthors(posts.map((p: Post) => p.user_id));
+  await hydrateEngagement(posts);
   return posts;
 }
 
@@ -109,6 +112,7 @@ export async function getBookmarkedPosts(limit = 50): Promise<Post[]> {
     .map((row) => (row.posts ? rowToPost(row.posts) : null))
     .filter(Boolean) as Post[];
   await hydrateAuthors(posts.map((p) => p.user_id));
+  await hydrateEngagement(posts, { bookmarked: true });
   return posts;
 }
 
@@ -117,6 +121,28 @@ async function hydrateAuthors(ids: string[]) {
   if (unique.length === 0) return;
   const { data } = await db.from("profiles").select("*").in("id", unique);
   if (data) cacheProfiles((data as any[]).map(rowToProfile));
+}
+
+/**
+ * Marks which posts the signed-in user has already liked, reposted or saved so
+ * those states survive a page reload instead of resetting to "off".
+ */
+async function hydrateEngagement(posts: Post[], defaults: { bookmarked?: boolean } = {}) {
+  if (posts.length === 0) return posts;
+  try {
+    const { liked, reposted, bookmarked } = await getMyEngagement(posts.map((p) => p.id));
+    const likedSet = new Set(liked);
+    const repostedSet = new Set(reposted);
+    const bookmarkedSet = new Set(bookmarked);
+    for (const post of posts) {
+      post.likedByMe = likedSet.has(post.id);
+      post.repostedByMe = repostedSet.has(post.id);
+      post.bookmarkedByMe = defaults.bookmarked || bookmarkedSet.has(post.id);
+    }
+  } catch {
+    /* engagement flags are best-effort */
+  }
+  return posts;
 }
 
 export async function createPost(input: {
@@ -289,6 +315,20 @@ export async function getStories(): Promise<Story[]> {
   const { data } = await db.from("stories").select("*").order("created_at", { ascending: false });
   const stories = (data ?? []).map(rowToStory);
   await hydrateAuthors(stories.map((s: Story) => s.user_id));
+  try {
+    const { data: mine } = await db
+      .from("story_likes")
+      .select("story_id")
+      .eq("user_id", me())
+      .in("story_id", stories.map((s: Story) => s.id));
+    const likedSet = new Set(((mine ?? []) as any[]).map((r) => String(r.story_id)));
+    for (const story of stories) {
+      story.likedByMe = likedSet.has(story.id);
+      story.liked = story.likedByMe;
+    }
+  } catch {
+    /* best effort */
+  }
   return stories;
 }
 
@@ -380,14 +420,43 @@ export async function toggleFollowUser(targetUserId: string) {
   const userId = me();
   const { data: existing } = await db
     .from("follows")
-    .select("id")
+    .select("follower_id")
     .eq("follower_id", userId)
-    .eq("following_id", targetUserId)
+    .eq("target_id", targetUserId)
     .maybeSingle();
-  if (existing) await db.from("follows").delete().eq("id", existing.id);
-  else await db.from("follows").insert({ follower_id: userId, following_id: targetUserId });
+  if (existing) {
+    const { error } = await db
+      .from("follows")
+      .delete()
+      .eq("follower_id", userId)
+      .eq("target_id", targetUserId);
+    if (error) throw error;
+  } else {
+    const { error } = await db
+      .from("follows")
+      .insert({ follower_id: userId, target_id: targetUserId });
+    if (error) throw error;
+  }
   emitRealtime("follow:changed", { targetUserId, following: !existing });
+  emitRealtime("follow_updated", { targetUserId, following: !existing });
   return { following: !existing };
+}
+
+/** Ids the signed-in profile follows — used to render Follow buttons in their real state. */
+export async function getFollowingIds(): Promise<string[]> {
+  const { data } = await db.from("follows").select("target_id").eq("follower_id", me());
+  return ((data ?? []) as any[]).map((r) => String(r.target_id));
+}
+
+export async function isFollowingUser(targetUserId: string): Promise<boolean> {
+  if (!targetUserId || targetUserId === me()) return false;
+  const { data } = await db
+    .from("follows")
+    .select("follower_id")
+    .eq("follower_id", me())
+    .eq("target_id", targetUserId)
+    .maybeSingle();
+  return Boolean(data);
 }
 
 export async function uploadMedia(file: File, folder: "avatars" | "posts" | "stories" | "media" | "messages" = "media") {
@@ -422,8 +491,71 @@ function rowToSpace(row: any): Space {
 
 export async function getSpaces(): Promise<{ spaces: Space[] }> {
   const { data } = await db.from("spaces").select("*").order("created_at", { ascending: false });
-  return { spaces: (data ?? []).map(rowToSpace) };
+  const spaces = (data ?? []).map(rowToSpace);
+  if (spaces.length > 0) {
+    const { data: parts } = await db
+      .from("space_participants")
+      .select("*")
+      .in("space_id", spaces.map((s: Space) => s.id));
+    const rows = (parts ?? []) as any[];
+    await hydrateAuthors(rows.map((r) => r.user_id));
+    for (const space of spaces) {
+      space.participants = rows
+        .filter((r) => r.space_id === space.id)
+        .map((r) => rowToParticipant(r));
+    }
+    await hydrateAuthors(spaces.map((s: Space) => s.host_id));
+  }
+  return { spaces };
 }
+
+function rowToParticipant(row: any): SpaceParticipant {
+  return {
+    id: row.user_id,
+    role: (row.role as SpaceParticipant["role"]) ?? "listener",
+    handRaised: Boolean(row.hand_raised),
+    isMuted: Boolean(row.is_muted),
+    isSpeaking: Boolean(row.is_speaking),
+  };
+}
+
+/** Recomputes the stored listener count from the live participant rows. */
+async function syncSpaceListeners(spaceId: string) {
+  const { count } = await db
+    .from("space_participants")
+    .select("user_id", { count: "exact", head: true })
+    .eq("space_id", spaceId);
+  const listeners = count ?? 0;
+  await db.from("spaces").update({ listeners }).eq("id", spaceId);
+  emitRealtime("space:listeners", { spaceId, listeners });
+  return listeners;
+}
+
+export async function getSpaceParticipants(spaceId: string): Promise<SpaceParticipant[]> {
+  const { data } = await db.from("space_participants").select("*").eq("space_id", spaceId);
+  const rows = (data ?? []) as any[];
+  await hydrateAuthors(rows.map((r) => r.user_id));
+  return rows.map(rowToParticipant);
+}
+
+export async function getSpaceMessages(spaceId: string): Promise<SpaceChatMessage[]> {
+  const { data } = await db
+    .from("space_messages")
+    .select("*")
+    .eq("space_id", spaceId)
+    .order("created_at", { ascending: true })
+    .limit(200);
+  const rows = (data ?? []) as any[];
+  await hydrateAuthors(rows.map((r) => r.user_id));
+  return rows.map((r) => ({
+    id: String(r.id),
+    userId: r.user_id,
+    name: "",
+    body: r.body ?? "",
+    createdAt: r.created_at ?? nowIso(),
+  }));
+}
+
 
 /** Start a new live audio room hosted by the signed-in profile. */
 export async function createSpace(input: { title: string; topic: string; gradient?: string }) {
@@ -448,16 +580,56 @@ export async function createSpace(input: { title: string; topic: string; gradien
 }
 
 export async function joinSpace(spaceId: string) {
-  await db.from("space_participants").upsert({ space_id: spaceId, user_id: me(), role: "listener" });
-  emitRealtime("space:joined", { spaceId, userId: me() });
-  return { ok: true };
+  const { data: space } = await db.from("spaces").select("host_id").eq("id", spaceId).maybeSingle();
+  const role = space?.host_id === me() ? "host" : "listener";
+  await db
+    .from("space_participants")
+    .upsert({ space_id: spaceId, user_id: me(), role }, { onConflict: "space_id,user_id" });
+  const listeners = await syncSpaceListeners(spaceId);
+  emitRealtime("space:joined", { spaceId, userId: me(), listeners });
+  return { ok: true, listeners };
 }
 
 export async function leaveSpace(spaceId: string) {
   await db.from("space_participants").delete().eq("space_id", spaceId).eq("user_id", me());
-  emitRealtime("space:left", { spaceId, userId: me() });
+  const listeners = await syncSpaceListeners(spaceId);
+  emitRealtime("space:left", { spaceId, userId: me(), listeners });
+  return { ok: true, listeners };
+}
+
+/** Host control: change a participant between speaker and listener. */
+export async function setSpaceParticipantRole(
+  spaceId: string,
+  userId: string,
+  role: "speaker" | "listener",
+) {
+  const { error } = await db
+    .from("space_participants")
+    .update({
+      role,
+      hand_raised: false,
+      ...(role === "listener" ? { is_speaking: false, is_muted: true } : {}),
+    })
+    .eq("space_id", spaceId)
+    .eq("user_id", userId);
+  if (error) throw error;
+  emitRealtime("space:role", { spaceId, userId, role });
+  return { role };
+}
+
+/** Host control: close the room for everyone and keep it as a replay. */
+export async function endSpace(spaceId: string, options: { recorded?: boolean } = {}) {
+  const { error } = await db
+    .from("spaces")
+    .update({ live: false, recorded: options.recorded ?? true, listeners: 0 })
+    .eq("id", spaceId)
+    .eq("host_id", me());
+  if (error) throw error;
+  await db.from("space_participants").delete().eq("space_id", spaceId);
+  emitRealtime("space:ended", { id: spaceId, spaceId });
   return { ok: true };
 }
+
 
 export async function toggleHandRaised(spaceId: string, raised: boolean) {
   await db
@@ -480,18 +652,19 @@ export async function toggleSpeaking(spaceId: string, speaking: boolean, muted: 
 }
 
 export async function sendSpaceMessage(spaceId: string, body: string) {
-  const message = {
-    id: `sm_${Date.now()}`,
-    userId: me(),
+  const { data, error } = await db
+    .from("space_messages")
+    .insert({ space_id: spaceId, user_id: me(), body })
+    .select("*")
+    .single();
+  if (error) throw error;
+  const message: SpaceChatMessage = {
+    id: String(data.id),
+    userId: data.user_id,
     name: currentUser.display_name,
-    body,
-    createdAt: nowIso(),
+    body: data.body ?? body,
+    createdAt: data.created_at ?? nowIso(),
   };
-  try {
-    await db.from("space_messages").insert({ space_id: spaceId, user_id: me(), body });
-  } catch {
-    /* best effort */
-  }
   emitRealtime("space:message", { spaceId, message });
   return { message };
 }
@@ -1121,7 +1294,8 @@ export async function getUserProfile(idOrUsername: string): Promise<{ profile: P
   if (!data) return { profile: null };
   const profile = rowToProfile(data as any);
   cacheProfiles([profile]);
-  return { profile };
+  const isFollowing = await isFollowingUser(profile.id).catch(() => false);
+  return { profile: { ...profile, isFollowing } as Profile & { isFollowing: boolean } };
 }
 
 export async function getProfileById(idOrUsername: string): Promise<Profile | null> {
@@ -1175,7 +1349,15 @@ export async function globalSearch(
 /** Single Space by id. */
 export async function getSpace(id: string): Promise<{ space: Space | null }> {
   const { data } = await db.from("spaces").select("*").eq("id", id).maybeSingle();
-  return { space: (data as Space) ?? null };
+  if (!data) return { space: null };
+  const space = rowToSpace(data);
+  const [participants, messages] = await Promise.all([
+    getSpaceParticipants(id).catch(() => []),
+    getSpaceMessages(id).catch(() => []),
+  ]);
+  space.participants = participants;
+  space.messages = messages;
+  return { space };
 }
 
 export async function markNotificationRead(id: string) {

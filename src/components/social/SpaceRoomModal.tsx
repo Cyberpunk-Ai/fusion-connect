@@ -34,6 +34,10 @@ import {
   toggleHandRaised,
   sendSpaceMessage,
   summarizeSpaceAI,
+  getSpaceParticipants,
+  getSpaceMessages,
+  setSpaceParticipantRole,
+  endSpace,
 } from "@/lib/api-client";
 import { useRealtime } from "@/lib/realtime";
 import { cn } from "@/lib/utils";
