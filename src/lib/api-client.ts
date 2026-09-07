@@ -650,18 +650,19 @@ export async function toggleSpeaking(spaceId: string, speaking: boolean, muted: 
 }
 
 export async function sendSpaceMessage(spaceId: string, body: string) {
-  const message = {
-    id: `sm_${Date.now()}`,
-    userId: me(),
+  const { data, error } = await db
+    .from("space_messages")
+    .insert({ space_id: spaceId, user_id: me(), body })
+    .select("*")
+    .single();
+  if (error) throw error;
+  const message: SpaceChatMessage = {
+    id: String(data.id),
+    userId: data.user_id,
     name: currentUser.display_name,
-    body,
-    createdAt: nowIso(),
+    body: data.body ?? body,
+    createdAt: data.created_at ?? nowIso(),
   };
-  try {
-    await db.from("space_messages").insert({ space_id: spaceId, user_id: me(), body });
-  } catch {
-    /* best effort */
-  }
   emitRealtime("space:message", { spaceId, message });
   return { message };
 }
