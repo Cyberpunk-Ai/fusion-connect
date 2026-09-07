@@ -418,14 +418,43 @@ export async function toggleFollowUser(targetUserId: string) {
   const userId = me();
   const { data: existing } = await db
     .from("follows")
-    .select("id")
+    .select("follower_id")
     .eq("follower_id", userId)
-    .eq("following_id", targetUserId)
+    .eq("target_id", targetUserId)
     .maybeSingle();
-  if (existing) await db.from("follows").delete().eq("id", existing.id);
-  else await db.from("follows").insert({ follower_id: userId, following_id: targetUserId });
+  if (existing) {
+    const { error } = await db
+      .from("follows")
+      .delete()
+      .eq("follower_id", userId)
+      .eq("target_id", targetUserId);
+    if (error) throw error;
+  } else {
+    const { error } = await db
+      .from("follows")
+      .insert({ follower_id: userId, target_id: targetUserId });
+    if (error) throw error;
+  }
   emitRealtime("follow:changed", { targetUserId, following: !existing });
+  emitRealtime("follow_updated", { targetUserId, following: !existing });
   return { following: !existing };
+}
+
+/** Ids the signed-in profile follows — used to render Follow buttons in their real state. */
+export async function getFollowingIds(): Promise<string[]> {
+  const { data } = await db.from("follows").select("target_id").eq("follower_id", me());
+  return ((data ?? []) as any[]).map((r) => String(r.target_id));
+}
+
+export async function isFollowingUser(targetUserId: string): Promise<boolean> {
+  if (!targetUserId || targetUserId === me()) return false;
+  const { data } = await db
+    .from("follows")
+    .select("follower_id")
+    .eq("follower_id", me())
+    .eq("target_id", targetUserId)
+    .maybeSingle();
+  return Boolean(data);
 }
 
 export async function uploadMedia(file: File, folder: "avatars" | "posts" | "stories" | "media" | "messages" = "media") {
