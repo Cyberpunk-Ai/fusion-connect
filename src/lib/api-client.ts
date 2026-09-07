@@ -19,6 +19,8 @@ import type {
   PostComment,
   Profile,
   Space,
+  SpaceParticipant,
+  SpaceChatMessage,
   Story,
   SystemSettings,
   Topic,
