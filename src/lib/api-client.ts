@@ -313,6 +313,20 @@ export async function getStories(): Promise<Story[]> {
   const { data } = await db.from("stories").select("*").order("created_at", { ascending: false });
   const stories = (data ?? []).map(rowToStory);
   await hydrateAuthors(stories.map((s: Story) => s.user_id));
+  try {
+    const { data: mine } = await db
+      .from("story_likes")
+      .select("story_id")
+      .eq("user_id", me())
+      .in("story_id", stories.map((s: Story) => s.id));
+    const likedSet = new Set(((mine ?? []) as any[]).map((r) => String(r.story_id)));
+    for (const story of stories) {
+      story.likedByMe = likedSet.has(story.id);
+      story.liked = story.likedByMe;
+    }
+  } catch {
+    /* best effort */
+  }
   return stories;
 }
 
