@@ -578,16 +578,56 @@ export async function createSpace(input: { title: string; topic: string; gradien
 }
 
 export async function joinSpace(spaceId: string) {
-  await db.from("space_participants").upsert({ space_id: spaceId, user_id: me(), role: "listener" });
-  emitRealtime("space:joined", { spaceId, userId: me() });
-  return { ok: true };
+  const { data: space } = await db.from("spaces").select("host_id").eq("id", spaceId).maybeSingle();
+  const role = space?.host_id === me() ? "host" : "listener";
+  await db
+    .from("space_participants")
+    .upsert({ space_id: spaceId, user_id: me(), role }, { onConflict: "space_id,user_id" });
+  const listeners = await syncSpaceListeners(spaceId);
+  emitRealtime("space:joined", { spaceId, userId: me(), listeners });
+  return { ok: true, listeners };
 }
 
 export async function leaveSpace(spaceId: string) {
   await db.from("space_participants").delete().eq("space_id", spaceId).eq("user_id", me());
-  emitRealtime("space:left", { spaceId, userId: me() });
+  const listeners = await syncSpaceListeners(spaceId);
+  emitRealtime("space:left", { spaceId, userId: me(), listeners });
+  return { ok: true, listeners };
+}
+
+/** Host control: change a participant between speaker and listener. */
+export async function setSpaceParticipantRole(
+  spaceId: string,
+  userId: string,
+  role: "speaker" | "listener",
+) {
+  const { error } = await db
+    .from("space_participants")
+    .update({
+      role,
+      hand_raised: false,
+      ...(role === "listener" ? { is_speaking: false, is_muted: true } : {}),
+    })
+    .eq("space_id", spaceId)
+    .eq("user_id", userId);
+  if (error) throw error;
+  emitRealtime("space:role", { spaceId, userId, role });
+  return { role };
+}
+
+/** Host control: close the room for everyone and keep it as a replay. */
+export async function endSpace(spaceId: string, options: { recorded?: boolean } = {}) {
+  const { error } = await db
+    .from("spaces")
+    .update({ live: false, recorded: options.recorded ?? true, listeners: 0 })
+    .eq("id", spaceId)
+    .eq("host_id", me());
+  if (error) throw error;
+  await db.from("space_participants").delete().eq("space_id", spaceId);
+  emitRealtime("space:ended", { id: spaceId, spaceId });
   return { ok: true };
 }
+
 
 export async function toggleHandRaised(spaceId: string, raised: boolean) {
   await db
