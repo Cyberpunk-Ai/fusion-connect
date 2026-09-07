@@ -1188,7 +1188,8 @@ export async function getUserProfile(idOrUsername: string): Promise<{ profile: P
   if (!data) return { profile: null };
   const profile = rowToProfile(data as any);
   cacheProfiles([profile]);
-  return { profile };
+  const isFollowing = await isFollowingUser(profile.id).catch(() => false);
+  return { profile: { ...profile, isFollowing } as Profile & { isFollowing: boolean } };
 }
 
 export async function getProfileById(idOrUsername: string): Promise<Profile | null> {
