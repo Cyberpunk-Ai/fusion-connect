@@ -91,6 +91,7 @@ function SpaceRoomModalContent({
   const [activeTipAlert, setActiveTipAlert] = useState<LiveTipAlert | null>(null);
   const [isRecordingSpace, setIsRecordingSpace] = useState(true);
   const [showEndConfirmation, setShowEndConfirmation] = useState(false);
+  const [endingSpace, setEndingSpace] = useState(false);
   const [pinnedTopic, setPinnedTopic] = useState<string>("Welcome to the Space! Feel free to ask questions in chat or raise your hand.");
   
   // Tipping state
@@ -209,73 +210,121 @@ function SpaceRoomModalContent({
   }, [space.id]);
 
   // Real-time events
-  useRealtime(
-    (event) => {
-      if (event.type === "space_chat_message") {
-        const msg = event.data || event.message;
-        if (msg) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: msg.id || `msg_${Date.now()}`,
-              userId: msg.userId || msg.user_id,
-              body: msg.body || msg.content,
-              timestamp: "Just now",
-            },
-          ]);
-        }
-      } else if (event.type === "space_tip") {
-        const tip = event.tip || event.data;
-        if (tip) {
-          setActiveTipAlert({
-            id: tip.id || `tip_${Date.now()}`,
-            senderName: tip.sender_name || "A listener",
-            amount: tip.amount || 5,
-            message: tip.message,
-          });
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `tip_msg_${Date.now()}`,
-              userId: tip.sender_id || "u_tip",
-              body: `🎉 Tipped $${(tip.amount || 0).toFixed(2)}${tip.message ? `: “${tip.message}”` : " to the stage!"}`,
-              timestamp: "Just now",
-              isTip: true,
-              tipAmount: tip.amount,
-            },
-          ]);
-          triggerReaction("💰");
-          setTimeout(() => setActiveTipAlert(null), 6000);
-        }
-      } else if (event.type === "speaking_state") {
-        const data = event.data || event;
-        if (data && data.userId) {
-          setParticipants((prev) =>
-            prev.map((p) =>
-              p.id === data.userId
-                ? { ...p, isSpeaking: !!data.isSpeaking, isMuted: !!data.isMuted }
-                : p
-            )
+  useRealtime((event) => {
+    const type = event?.type as string | undefined;
+    if (!type) return;
+    if (event.spaceId && event.spaceId !== space.id) return;
+
+    if (type === "space:message" || type === "space_chat_message") {
+      const msg = event.message || event.data;
+      if (msg && msg.userId !== currentUser.id) {
+        setMessages((prev) =>
+          prev.some((m) => m.id === String(msg.id))
+            ? prev
+            : [
+                ...prev,
+                {
+                  id: String(msg.id || `msg_${Date.now()}`),
+                  userId: msg.userId || msg.user_id,
+                  body: msg.body || msg.content,
+                  timestamp: "Just now",
+                },
+              ]
+        );
+      }
+    } else if (type === "space:tip" || type === "space_tip") {
+      const tip = event.tip || event.data || event;
+      if (tip) {
+        setActiveTipAlert({
+          id: tip.id || `tip_${Date.now()}`,
+          senderName: tip.sender_name || tip.senderName || "A listener",
+          amount: tip.amount || 5,
+          message: tip.message,
+        });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `tip_msg_${Date.now()}`,
+            userId: tip.sender_id || tip.from_user_id || "u_tip",
+            body: `🎉 Tipped $${(tip.amount || 0).toFixed(2)}${tip.message ? `: “${tip.message}”` : " to the stage!"}`,
+            timestamp: "Just now",
+            isTip: true,
+            tipAmount: tip.amount,
+          },
+        ]);
+        triggerReaction("💰");
+        setTimeout(() => setActiveTipAlert(null), 6000);
+      }
+    } else if (type === "space:speaking") {
+      if (event.userId) {
+        setParticipants((prev) =>
+          prev.map((p) =>
+            p.id === event.userId ? { ...p, isSpeaking: !!event.speaking, isMuted: !!event.muted } : p
+          )
+        );
+      }
+    } else if (type === "space:hand") {
+      if (event.userId && event.userId !== currentUser.id) {
+        const user = getProfile(event.userId);
+        if (event.raised) toast.info(`${user.display_name} raised their hand!`);
+        setParticipants((prev) =>
+          prev.map((p) => (p.id === event.userId ? { ...p, handRaised: !!event.raised } : p))
+        );
+      }
+    } else if (type === "space:role") {
+      if (event.userId) {
+        setParticipants((prev) =>
+          prev.map((p) =>
+            p.id === event.userId
+              ? {
+                  ...p,
+                  role: event.role,
+                  handRaised: false,
+                  ...(event.role === "listener" ? { isSpeaking: false, isMuted: true } : {}),
+                }
+              : p
+          )
+        );
+        if (event.userId === currentUser.id) {
+          toast.info(
+            event.role === "speaker" ? "The host invited you to speak!" : "You moved back to listening"
           );
-        }
-      } else if (event.type === "hand_raised") {
-        const data = event.data || event;
-        if (data && data.userId && data.userId !== currentUser.id) {
-          const user = getProfile(data.userId);
-          toast.info(`${user.display_name} raised their hand!`);
-          setParticipants((prev) =>
-            prev.map((p) => (p.id === data.userId ? { ...p, handRaised: true } : p))
-          );
-        }
-      } else if (event.type === "participant_left") {
-        const data = event.data || event;
-        if (data && data.userId) {
-          setParticipants((prev) => prev.filter((p) => p.id !== data.userId));
         }
       }
-    },
-    ["space_chat_message", "speaking_state", "hand_raised", "participant_joined", "participant_left", "space_tip"]
-  );
+    } else if (type === "space:joined") {
+      if (event.userId && event.userId !== currentUser.id) {
+        const profile = getProfile(event.userId);
+        setParticipants((prev) =>
+          prev.some((p) => p.id === event.userId)
+            ? prev
+            : [
+                ...prev,
+                {
+                  id: event.userId,
+                  role: "listener" as const,
+                  isSpeaking: false,
+                  isMuted: true,
+                  handRaised: false,
+                  display_name: profile.display_name,
+                  username: profile.username,
+                  avatar_url: profile.avatar_url || undefined,
+                },
+              ]
+        );
+      }
+    } else if (type === "space:left") {
+      if (event.userId) {
+        setParticipants((prev) => prev.filter((p) => p.id !== event.userId));
+      }
+    } else if (type === "space:ended" || type === "space:terminated") {
+      const endedId = event.id || event.spaceId;
+      if (endedId === space.id) {
+        if (space.host_id !== currentUser.id) toast.info("The host ended this Space");
+        onEnded?.(space.id);
+        onClose();
+      }
+    }
+  }, [space.id]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
