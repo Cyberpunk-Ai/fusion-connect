@@ -239,15 +239,29 @@ function SpacesPage() {
   const [gradientDraft, setGradientDraft] = useState(gradientChoices[0]!.value);
   const [creating, setCreating] = useState(false);
 
+  const refreshSpaces = useCallback(async () => {
+    try {
+      const data = await getSpaces();
+      if (data?.spaces) setAllSpaces(data.spaces);
+    } catch {}
+  }, []);
+
   useEffect(() => {
     setLoading(true);
-    getSpaces()
-      .then((data) => {
-        if (data?.spaces && data.spaces.length > 0) setAllSpaces(data.spaces);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+    refreshSpaces().finally(() => setLoading(false));
+  }, [refreshSpaces]);
+
+  // Keep the list in sync when any room ends or listener counts change
+  useRealtime((event) => {
+    const type = event?.type as string | undefined;
+    if (type === "space:ended" || type === "space:terminated" || type === "space:created") {
+      void refreshSpaces();
+    } else if (type === "space:listeners" && event.spaceId) {
+      setAllSpaces((prev) =>
+        prev.map((s) => (s.id === event.spaceId ? { ...s, listeners: event.listeners } : s)),
+      );
+    }
+  }, [refreshSpaces]);
 
   // Auto-open space if spaceId is provided in URL
   useEffect(() => {
@@ -417,6 +431,18 @@ function SpacesPage() {
         space={activeSpace}
         isOpen={Boolean(activeSpace)}
         onClose={() => setActiveSpace(null)}
+        onEnded={(endedId) => {
+          setActiveSpace(null);
+          setAllSpaces((prev) =>
+            prev.map((s) =>
+              s.id === endedId
+                ? { ...s, live: false, recorded: true, listeners: 0, startsIn: undefined }
+                : s,
+            ),
+          );
+          setTab("Recorded");
+          refreshSpaces();
+        }}
       />
 
       {/* Create Space Dialog */}
