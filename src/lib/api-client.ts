@@ -759,6 +759,21 @@ export async function sendMessage(target: string, body: string, mediaUrl?: strin
   return { message: data as Message, conversationId };
 }
 
+/** Update the text of a message the signed-in profile sent. */
+export async function editMessage(messageId: string, body: string) {
+  const { data, error } = await db
+    .from("messages")
+    .update({ body })
+    .eq("id", messageId)
+    .eq("sender_id", me())
+    .select("*")
+    .single();
+  if (error) throw error;
+  emitRealtime("message:updated", data);
+  return { message: data as Message };
+}
+
+
 
 export async function getNotifications(): Promise<Notification[]> {
   const { data } = await db
