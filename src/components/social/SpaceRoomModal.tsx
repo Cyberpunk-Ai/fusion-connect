@@ -47,6 +47,7 @@ interface SpaceRoomModalProps {
   space: Space | null;
   isOpen: boolean;
   onClose: () => void;
+  onEnded?: (spaceId: string) => void;
 }
 
 interface ChatMessage {
@@ -65,12 +66,20 @@ interface LiveTipAlert {
   message?: string;
 }
 
-export function SpaceRoomModal({ space, isOpen, onClose }: SpaceRoomModalProps) {
+export function SpaceRoomModal({ space, isOpen, onClose, onEnded }: SpaceRoomModalProps) {
   if (!isOpen || !space) return null;
-  return <SpaceRoomModalContent space={space} onClose={onClose} />;
+  return <SpaceRoomModalContent space={space} onClose={onClose} onEnded={onEnded} />;
 }
 
-function SpaceRoomModalContent({ space, onClose }: { space: Space; onClose: () => void }) {
+function SpaceRoomModalContent({
+  space,
+  onClose,
+  onEnded,
+}: {
+  space: Space;
+  onClose: () => void;
+  onEnded?: (spaceId: string) => void;
+}) {
   const [activeTab, setActiveTab] = useState<"stage" | "chat" | "requests">("stage");
   const [chatDraft, setChatDraft] = useState("");
   const [isMuted, setIsMuted] = useState(true);
@@ -145,9 +154,56 @@ function SpaceRoomModalContent({ space, onClose }: { space: Space; onClose: () =
       }))
     );
 
-    joinSpace(space.id).catch(() => {});
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await joinSpace(space.id);
+      } catch {}
+      try {
+        const [savedParticipants, savedMessages] = await Promise.all([
+          getSpaceParticipants(space.id),
+          getSpaceMessages(space.id),
+        ]);
+        if (cancelled) return;
+
+        if (savedParticipants.length > 0) {
+          setParticipants(
+            savedParticipants.map((p) => {
+              const profile = getProfile(p.id);
+              return {
+                id: p.id,
+                role: (p.role as "host" | "speaker" | "listener") || "listener",
+                isSpeaking: !!p.isSpeaking,
+                isMuted: !!p.isMuted,
+                handRaised: !!p.handRaised,
+                display_name: profile.display_name,
+                username: profile.username,
+                avatar_url: profile.avatar_url || undefined,
+              };
+            })
+          );
+          const mine = savedParticipants.find((p) => p.id === currentUser.id);
+          if (mine) {
+            setIsMuted(mine.isMuted !== false);
+            setIsSpeaking(!!mine.isSpeaking);
+            setHandRaised(!!mine.handRaised);
+          }
+        }
+
+        setMessages(
+          savedMessages.map((m) => ({
+            id: String(m.id),
+            userId: m.userId,
+            body: m.body,
+            timestamp: m.createdAt,
+          }))
+        );
+      } catch {}
+    })();
 
     return () => {
+      cancelled = true;
       leaveSpace(space.id).catch(() => {});
     };
   }, [space.id]);
@@ -283,20 +339,34 @@ function SpaceRoomModalContent({ space, onClose }: { space: Space; onClose: () =
     } catch {}
   }
 
-  const promoteToSpeaker = (userId: string) => {
+  const promoteToSpeaker = async (userId: string) => {
+    const previous = participants;
     setParticipants((prev) =>
       prev.map((p) => (p.id === userId ? { ...p, role: "speaker", handRaised: false } : p))
     );
     const target = getProfile(userId);
-    toast.success(`Invited ${target.display_name} to speak!`);
+    try {
+      await setSpaceParticipantRole(space.id, userId, "speaker");
+      toast.success(`Invited ${target.display_name} to speak!`);
+    } catch {
+      setParticipants(previous);
+      toast.error("Could not invite them to speak. Please try again.");
+    }
   };
 
-  const demoteToListener = (userId: string) => {
+  const demoteToListener = async (userId: string) => {
+    const previous = participants;
     setParticipants((prev) =>
       prev.map((p) => (p.id === userId ? { ...p, role: "listener", isSpeaking: false, isMuted: true } : p))
     );
     const target = getProfile(userId);
-    toast.info(`Moved ${target.display_name} to listeners`);
+    try {
+      await setSpaceParticipantRole(space.id, userId, "listener");
+      toast.info(`Moved ${target.display_name} to listeners`);
+    } catch {
+      setParticipants(previous);
+      toast.error("Could not move them to listeners. Please try again.");
+    }
   };
 
   async function handleSummarize() {
@@ -854,14 +924,28 @@ function SpaceRoomModalContent({ space, onClose }: { space: Space; onClose: () =
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setShowEndConfirmation(false);
-                  toast.success("Space ended. Recording & summary saved.");
-                  onClose();
+                disabled={endingSpace}
+                onClick={async () => {
+                  setEndingSpace(true);
+                  try {
+                    await endSpace(space.id, { recorded: isRecordingSpace });
+                    setShowEndConfirmation(false);
+                    toast.success(
+                      isRecordingSpace
+                        ? "Space ended. The replay was saved."
+                        : "Space ended."
+                    );
+                    onEnded?.(space.id);
+                    onClose();
+                  } catch {
+                    toast.error("Could not end the Space. Please try again.");
+                  } finally {
+                    setEndingSpace(false);
+                  }
                 }}
-                className="flex-1 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white py-2.5 text-xs font-bold shadow-soft cursor-pointer"
+                className="flex-1 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white py-2.5 text-xs font-bold shadow-soft cursor-pointer disabled:opacity-60"
               >
-                End Space Now
+                {endingSpace ? "Ending…" : "End Space Now"}
               </button>
             </div>
           </div>
