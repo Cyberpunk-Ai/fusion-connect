@@ -8,7 +8,13 @@ import { InfoModal } from "@/components/social/InfoModal";
 import { compact } from "@/lib/formatters";
 import { currentUserId } from "@/lib/profile-service";
 import type { Profile, Space, TrendingTag } from "@/lib/types";
-import { toggleFollowUser, getTrendingTags, getUsers, getSpaces } from "@/lib/api-client";
+import {
+  toggleFollowUser,
+  isFollowingUser,
+  getTrendingTags,
+  getUsers,
+  getSpaces,
+} from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 export function SearchBox({ placeholder = "Search Spaces" }: { placeholder?: string }) {
@@ -39,15 +45,30 @@ export function FollowButton({ initial = false, targetUserId }: { initial?: bool
   const [following, setFollowing] = useState(initial);
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (!targetUserId) return;
+    let cancelled = false;
+    isFollowingUser(targetUserId)
+      .then((res) => {
+        if (!cancelled) setFollowing(res);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [targetUserId]);
+
   async function handleToggle() {
+    const previous = following;
     const next = !following;
     setFollowing(next);
     if (targetUserId) {
       setLoading(true);
       try {
         await toggleFollowUser(targetUserId);
-      } catch {}
-      finally {
+      } catch {
+        setFollowing(previous);
+      } finally {
         setLoading(false);
       }
     }

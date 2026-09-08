@@ -47,6 +47,7 @@ interface SpaceRoomModalProps {
   space: Space | null;
   isOpen: boolean;
   onClose: () => void;
+  onEnded?: (spaceId: string) => void;
 }
 
 interface ChatMessage {
@@ -65,12 +66,20 @@ interface LiveTipAlert {
   message?: string;
 }
 
-export function SpaceRoomModal({ space, isOpen, onClose }: SpaceRoomModalProps) {
+export function SpaceRoomModal({ space, isOpen, onClose, onEnded }: SpaceRoomModalProps) {
   if (!isOpen || !space) return null;
-  return <SpaceRoomModalContent space={space} onClose={onClose} />;
+  return <SpaceRoomModalContent space={space} onClose={onClose} onEnded={onEnded} />;
 }
 
-function SpaceRoomModalContent({ space, onClose }: { space: Space; onClose: () => void }) {
+function SpaceRoomModalContent({
+  space,
+  onClose,
+  onEnded,
+}: {
+  space: Space;
+  onClose: () => void;
+  onEnded?: (spaceId: string) => void;
+}) {
   const [activeTab, setActiveTab] = useState<"stage" | "chat" | "requests">("stage");
   const [chatDraft, setChatDraft] = useState("");
   const [isMuted, setIsMuted] = useState(true);
@@ -82,6 +91,7 @@ function SpaceRoomModalContent({ space, onClose }: { space: Space; onClose: () =
   const [activeTipAlert, setActiveTipAlert] = useState<LiveTipAlert | null>(null);
   const [isRecordingSpace, setIsRecordingSpace] = useState(true);
   const [showEndConfirmation, setShowEndConfirmation] = useState(false);
+  const [endingSpace, setEndingSpace] = useState(false);
   const [pinnedTopic, setPinnedTopic] = useState<string>("Welcome to the Space! Feel free to ask questions in chat or raise your hand.");
   
   // Tipping state
@@ -145,81 +155,176 @@ function SpaceRoomModalContent({ space, onClose }: { space: Space; onClose: () =
       }))
     );
 
-    joinSpace(space.id).catch(() => {});
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await joinSpace(space.id);
+      } catch {}
+      try {
+        const [savedParticipants, savedMessages] = await Promise.all([
+          getSpaceParticipants(space.id),
+          getSpaceMessages(space.id),
+        ]);
+        if (cancelled) return;
+
+        if (savedParticipants.length > 0) {
+          setParticipants(
+            savedParticipants.map((p) => {
+              const profile = getProfile(p.id);
+              return {
+                id: p.id,
+                role: (p.role as "host" | "speaker" | "listener") || "listener",
+                isSpeaking: !!p.isSpeaking,
+                isMuted: !!p.isMuted,
+                handRaised: !!p.handRaised,
+                display_name: profile.display_name,
+                username: profile.username,
+                avatar_url: profile.avatar_url || undefined,
+              };
+            })
+          );
+          const mine = savedParticipants.find((p) => p.id === currentUser.id);
+          if (mine) {
+            setIsMuted(mine.isMuted !== false);
+            setIsSpeaking(!!mine.isSpeaking);
+            setHandRaised(!!mine.handRaised);
+          }
+        }
+
+        setMessages(
+          savedMessages.map((m) => ({
+            id: String(m.id),
+            userId: m.userId,
+            body: m.body,
+            timestamp: m.createdAt,
+          }))
+        );
+      } catch {}
+    })();
 
     return () => {
+      cancelled = true;
       leaveSpace(space.id).catch(() => {});
     };
   }, [space.id]);
 
   // Real-time events
-  useRealtime(
-    (event) => {
-      if (event.type === "space_chat_message") {
-        const msg = event.data || event.message;
-        if (msg) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: msg.id || `msg_${Date.now()}`,
-              userId: msg.userId || msg.user_id,
-              body: msg.body || msg.content,
-              timestamp: "Just now",
-            },
-          ]);
-        }
-      } else if (event.type === "space_tip") {
-        const tip = event.tip || event.data;
-        if (tip) {
-          setActiveTipAlert({
-            id: tip.id || `tip_${Date.now()}`,
-            senderName: tip.sender_name || "A listener",
-            amount: tip.amount || 5,
-            message: tip.message,
-          });
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `tip_msg_${Date.now()}`,
-              userId: tip.sender_id || "u_tip",
-              body: `🎉 Tipped $${(tip.amount || 0).toFixed(2)}${tip.message ? `: “${tip.message}”` : " to the stage!"}`,
-              timestamp: "Just now",
-              isTip: true,
-              tipAmount: tip.amount,
-            },
-          ]);
-          triggerReaction("💰");
-          setTimeout(() => setActiveTipAlert(null), 6000);
-        }
-      } else if (event.type === "speaking_state") {
-        const data = event.data || event;
-        if (data && data.userId) {
-          setParticipants((prev) =>
-            prev.map((p) =>
-              p.id === data.userId
-                ? { ...p, isSpeaking: !!data.isSpeaking, isMuted: !!data.isMuted }
-                : p
-            )
+  useRealtime((event) => {
+    const type = event?.type as string | undefined;
+    if (!type) return;
+    if (event.spaceId && event.spaceId !== space.id) return;
+
+    if (type === "space:message" || type === "space_chat_message") {
+      const msg = event.message || event.data;
+      if (msg && msg.userId !== currentUser.id) {
+        setMessages((prev) =>
+          prev.some((m) => m.id === String(msg.id))
+            ? prev
+            : [
+                ...prev,
+                {
+                  id: String(msg.id || `msg_${Date.now()}`),
+                  userId: msg.userId || msg.user_id,
+                  body: msg.body || msg.content,
+                  timestamp: "Just now",
+                },
+              ]
+        );
+      }
+    } else if (type === "space:tip" || type === "space_tip") {
+      const tip = event.tip || event.data || event;
+      if (tip) {
+        setActiveTipAlert({
+          id: tip.id || `tip_${Date.now()}`,
+          senderName: tip.sender_name || tip.senderName || "A listener",
+          amount: tip.amount || 5,
+          message: tip.message,
+        });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `tip_msg_${Date.now()}`,
+            userId: tip.sender_id || tip.from_user_id || "u_tip",
+            body: `🎉 Tipped $${(tip.amount || 0).toFixed(2)}${tip.message ? `: “${tip.message}”` : " to the stage!"}`,
+            timestamp: "Just now",
+            isTip: true,
+            tipAmount: tip.amount,
+          },
+        ]);
+        triggerReaction("💰");
+        setTimeout(() => setActiveTipAlert(null), 6000);
+      }
+    } else if (type === "space:speaking") {
+      if (event.userId) {
+        setParticipants((prev) =>
+          prev.map((p) =>
+            p.id === event.userId ? { ...p, isSpeaking: !!event.speaking, isMuted: !!event.muted } : p
+          )
+        );
+      }
+    } else if (type === "space:hand") {
+      if (event.userId && event.userId !== currentUser.id) {
+        const user = getProfile(event.userId);
+        if (event.raised) toast.info(`${user.display_name} raised their hand!`);
+        setParticipants((prev) =>
+          prev.map((p) => (p.id === event.userId ? { ...p, handRaised: !!event.raised } : p))
+        );
+      }
+    } else if (type === "space:role") {
+      if (event.userId) {
+        setParticipants((prev) =>
+          prev.map((p) =>
+            p.id === event.userId
+              ? {
+                  ...p,
+                  role: event.role,
+                  handRaised: false,
+                  ...(event.role === "listener" ? { isSpeaking: false, isMuted: true } : {}),
+                }
+              : p
+          )
+        );
+        if (event.userId === currentUser.id) {
+          toast.info(
+            event.role === "speaker" ? "The host invited you to speak!" : "You moved back to listening"
           );
-        }
-      } else if (event.type === "hand_raised") {
-        const data = event.data || event;
-        if (data && data.userId && data.userId !== currentUser.id) {
-          const user = getProfile(data.userId);
-          toast.info(`${user.display_name} raised their hand!`);
-          setParticipants((prev) =>
-            prev.map((p) => (p.id === data.userId ? { ...p, handRaised: true } : p))
-          );
-        }
-      } else if (event.type === "participant_left") {
-        const data = event.data || event;
-        if (data && data.userId) {
-          setParticipants((prev) => prev.filter((p) => p.id !== data.userId));
         }
       }
-    },
-    ["space_chat_message", "speaking_state", "hand_raised", "participant_joined", "participant_left", "space_tip"]
-  );
+    } else if (type === "space:joined") {
+      if (event.userId && event.userId !== currentUser.id) {
+        const profile = getProfile(event.userId);
+        setParticipants((prev) =>
+          prev.some((p) => p.id === event.userId)
+            ? prev
+            : [
+                ...prev,
+                {
+                  id: event.userId,
+                  role: "listener" as const,
+                  isSpeaking: false,
+                  isMuted: true,
+                  handRaised: false,
+                  display_name: profile.display_name,
+                  username: profile.username,
+                  avatar_url: profile.avatar_url || undefined,
+                },
+              ]
+        );
+      }
+    } else if (type === "space:left") {
+      if (event.userId) {
+        setParticipants((prev) => prev.filter((p) => p.id !== event.userId));
+      }
+    } else if (type === "space:ended" || type === "space:terminated") {
+      const endedId = event.id || event.spaceId;
+      if (endedId === space.id) {
+        if (space.host_id !== currentUser.id) toast.info("The host ended this Space");
+        onEnded?.(space.id);
+        onClose();
+      }
+    }
+  }, [space.id]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -283,20 +388,34 @@ function SpaceRoomModalContent({ space, onClose }: { space: Space; onClose: () =
     } catch {}
   }
 
-  const promoteToSpeaker = (userId: string) => {
+  const promoteToSpeaker = async (userId: string) => {
+    const previous = participants;
     setParticipants((prev) =>
       prev.map((p) => (p.id === userId ? { ...p, role: "speaker", handRaised: false } : p))
     );
     const target = getProfile(userId);
-    toast.success(`Invited ${target.display_name} to speak!`);
+    try {
+      await setSpaceParticipantRole(space.id, userId, "speaker");
+      toast.success(`Invited ${target.display_name} to speak!`);
+    } catch {
+      setParticipants(previous);
+      toast.error("Could not invite them to speak. Please try again.");
+    }
   };
 
-  const demoteToListener = (userId: string) => {
+  const demoteToListener = async (userId: string) => {
+    const previous = participants;
     setParticipants((prev) =>
       prev.map((p) => (p.id === userId ? { ...p, role: "listener", isSpeaking: false, isMuted: true } : p))
     );
     const target = getProfile(userId);
-    toast.info(`Moved ${target.display_name} to listeners`);
+    try {
+      await setSpaceParticipantRole(space.id, userId, "listener");
+      toast.info(`Moved ${target.display_name} to listeners`);
+    } catch {
+      setParticipants(previous);
+      toast.error("Could not move them to listeners. Please try again.");
+    }
   };
 
   async function handleSummarize() {
@@ -854,14 +973,28 @@ function SpaceRoomModalContent({ space, onClose }: { space: Space; onClose: () =
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setShowEndConfirmation(false);
-                  toast.success("Space ended. Recording & summary saved.");
-                  onClose();
+                disabled={endingSpace}
+                onClick={async () => {
+                  setEndingSpace(true);
+                  try {
+                    await endSpace(space.id, { recorded: isRecordingSpace });
+                    setShowEndConfirmation(false);
+                    toast.success(
+                      isRecordingSpace
+                        ? "Space ended. The replay was saved."
+                        : "Space ended."
+                    );
+                    onEnded?.(space.id);
+                    onClose();
+                  } catch {
+                    toast.error("Could not end the Space. Please try again.");
+                  } finally {
+                    setEndingSpace(false);
+                  }
                 }}
-                className="flex-1 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white py-2.5 text-xs font-bold shadow-soft cursor-pointer"
+                className="flex-1 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white py-2.5 text-xs font-bold shadow-soft cursor-pointer disabled:opacity-60"
               >
-                End Space Now
+                {endingSpace ? "Ending…" : "End Space Now"}
               </button>
             </div>
           </div>

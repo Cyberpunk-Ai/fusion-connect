@@ -33,7 +33,7 @@ import { TipModal } from "@/components/social/TipModal";
 import { timeAgo } from "@/lib/formatters";
 import { currentUserId, currentUser, getProfile, profileRegistry } from "@/lib/profile-service";
 import type { Conversation, Message, Profile } from "@/lib/types";
-import { getConversations, getMessages, sendMessage, uploadMedia, getUserProfile, getUsers } from "@/lib/api-client";
+import { getConversations, getMessages, sendMessage, editMessage, uploadMedia, getUserProfile, getUsers } from "@/lib/api-client";
 import { decrementUnreadMessages } from "@/lib/unread-state";
 import { useRealtime } from "@/lib/realtime";
 import { cn } from "@/lib/utils";
@@ -506,22 +506,28 @@ function MessagesPage() {
     setEditDraft(msg.body);
   };
 
-  const handleSaveEdit = (msgId: string) => {
-    if (!editDraft.trim()) return;
+  const handleSaveEdit = async (msgId: string) => {
+    const nextBody = editDraft.trim();
+    if (!nextBody) return;
+    const previous = all.find((m) => m.id === msgId);
     setAll((prev) =>
-      prev.map((m) =>
-        m.id === msgId ? { ...m, body: editDraft.trim(), is_edited: true } : m
-      )
+      prev.map((m) => (m.id === msgId ? { ...m, body: nextBody, is_edited: true } : m))
     );
     setEditingMsgId(null);
     setEditDraft("");
-    toast.success("Message edited");
+    try {
+      await editMessage(msgId, nextBody);
+      toast.success("Message edited");
+    } catch {
+      if (previous) setAll((prev) => prev.map((m) => (m.id === msgId ? previous : m)));
+      toast.error("Could not edit that message");
+    }
   };
 
   const handleDeleteMessage = (msgId: string) => {
     const targetMsg = all.find((m) => m.id === msgId);
     setAll((prev) => prev.filter((m) => m.id !== msgId));
-    toast.success("Message deleted", {
+    toast.success("Removed from your view", {
       action: targetMsg
         ? {
             label: "Undo",
